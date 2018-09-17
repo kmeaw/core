@@ -137,6 +137,30 @@ func (t *tasksAPI) Stop(ctx context.Context, id *sonm.TaskID) (*sonm.Empty, erro
 	return workerClient.StopTask(ctx, &sonm.ID{Id: id.GetId()})
 }
 
+func (t *tasksAPI) StopTasks(ctx context.Context, ids *sonm.StopTasksRequest) (*sonm.ErrorByStringID, error) {
+	client, cc, err := t.remotes.getWorkerClientForDeal(ctx, ids.GetDealID().Unwrap().String())
+	if err != nil {
+		return nil, err
+	}
+	defer cc.Close()
+
+	errs := &sonm.ErrorByStringID{Response: make([]*sonm.ErrorByStringID_Item, 0)}
+	for _, id := range ids.GetTaskIDs() {
+		response := &sonm.ErrorByStringID_Item{ID: id}
+		if _, err := client.StopTask(ctx, &sonm.ID{Id: id}); err != nil {
+			s, ok := status.FromError(err)
+			if !ok {
+				response.Error = err.Error()
+			} else {
+				response.Error = s.Message()
+			}
+		}
+		errs.Response = append(errs.Response, response)
+	}
+
+	return errs, nil
+}
+
 func (t *tasksAPI) PushTask(clientStream sonm.TaskManagement_PushTaskServer) error {
 	meta, err := t.extractStreamMeta(clientStream)
 	if err != nil {

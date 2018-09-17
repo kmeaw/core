@@ -100,6 +100,7 @@ It has these top-level messages:
 	DataSizeRate
 	Price
 	ErrorByID
+	ErrorByStringID
 	OrderIDs
 	GetOrdersReply
 	Benchmarks
@@ -113,6 +114,7 @@ It has these top-level messages:
 	Endpoints
 	JoinNetworkRequest
 	TaskListRequest
+	StopTasksRequest
 	QuickBuyRequest
 	DealFinishRequest
 	DealsFinishRequest

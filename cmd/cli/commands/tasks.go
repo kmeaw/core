@@ -337,7 +337,7 @@ var taskLogsCmd = &cobra.Command{
 }
 
 var taskStopCmd = &cobra.Command{
-	Use:   "stop <deal_id> <task_id>",
+	Use:   "stop <deal_id> <task_id> [task_id...]",
 	Short: "Stop task",
 	Args:  cobra.MinimumNArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -359,8 +359,14 @@ var taskStopCmd = &cobra.Command{
 			DealID: dealID,
 		}
 
-		if _, err := node.Stop(ctx, req); err != nil {
-			return fmt.Errorf("cannot stop status: %v", err)
+		errs, err := node.StopTasks(ctx, req)
+		if err != nil {
+			return fmt.Errorf("cannot stop task(s): %v", err)
+		}
+
+		if len(errs.GetResponse()) > 0 {
+			printStringErrorsById(cmd, errs)
+			return nil
 		}
 
 		showOk(cmd)

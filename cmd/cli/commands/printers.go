@@ -533,6 +533,20 @@ func printErrorById(cmd *cobra.Command, errors *sonm.ErrorByID) {
 	}
 }
 
+func printStringErrorsById(cmd *cobra.Command, errors *pb.ErrorByStringID) {
+	if isSimpleFormat() {
+		for _, err := range errors.GetResponse() {
+			status := "OK"
+			if len(err.Error) != 0 {
+				status = "FAIL " + err.GetError()
+			}
+			cmd.Printf("ID %s: %s\n", err.GetID(), status)
+		}
+	} else {
+		showJSON(cmd, errors.GetResponse())
+	}
+}
+
 func printID(cmd *cobra.Command, id string) {
 	if isSimpleFormat() {
 		cmd.Printf("ID = %s\r\n", id)

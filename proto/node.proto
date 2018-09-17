@@ -30,7 +30,10 @@ service TaskManagement {
     // Logs retrieves a task log (stdin/stderr) from given task
     rpc Logs(TaskLogsRequest) returns (stream TaskLogsChunk) {}
     // Stop stops a task by their ID
+    // Deprecated: use StopTasks instead
     rpc Stop(TaskID) returns (Empty) {}
+    // StopTasks stops several tasks by given IDs
+    rpc StopTasks(StopTasksRequest) returns (ErrorByStringID) {}
     // PullTask pulls task image back
     rpc PullTask(PullTaskRequest) returns (stream Chunk) {}
 }
@@ -42,6 +45,11 @@ message JoinNetworkRequest {
 
 message TaskListRequest {
     BigInt dealID = 1;
+}
+
+message StopTasksRequest {
+    BigInt dealID = 1;
+    repeated string taskIDs = 2;
 }
 
 // DealManagement describe a bunch of methods
