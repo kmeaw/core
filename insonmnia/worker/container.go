@@ -103,15 +103,13 @@ func newContainer(ctx context.Context, dockerClient *client.Client, d Descriptio
 		}
 	}
 
-	additionalNetworking := &network.NetworkingConfig{}
-	cleanup, err := tuners.Tune(ctx, &d, &hostConfig, additionalNetworking)
+	cleanup, err := tuners.Tune(ctx, &d, &hostConfig, &networkingConfig)
 	if err != nil {
 		log.G(ctx).Error("failed to tune container", zap.Error(err))
 		return nil, err
 	}
 	log.G(ctx).Debug("successfully tuned container")
 
-	log.G(ctx).Info("config", zap.Any("net", networkingConfig), zap.Any("host", hostConfig))
 	// create new container
 	// assign resulted containerid
 	// log all warnings
@@ -119,13 +117,6 @@ func newContainer(ctx context.Context, dockerClient *client.Client, d Descriptio
 	if err != nil {
 		return nil, err
 	}
-	for net, endpointCfg := range additionalNetworking.EndpointsConfig {
-		log.S(ctx).Infof("connecting to %s network", net)
-		if err := cont.client.NetworkConnect(ctx, endpointCfg.NetworkID, resp.ID, endpointCfg); err != nil {
-			return nil, err
-		}
-	}
-
 	cont.ID = resp.ID
 	cont.log = log.S(ctx).With(zap.String("container_id", cont.ID))
 	cont.cleanup = cleanup
