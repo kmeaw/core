@@ -7,6 +7,7 @@ import "./SNM.sol";
 import "./Blacklist.sol";
 import "./OracleUSD.sol";
 import "./ProfileRegistry.sol";
+import "./Administratum.sol";
 
 
 contract Market is Ownable, Pausable {
@@ -19,18 +20,6 @@ contract Market is Ownable, Pausable {
         STATUS_UNKNOWN,
         STATUS_ACCEPTED,
         STATUS_CLOSED
-    }
-
-    enum OrderType {
-        ORDER_UNKNOWN,
-        ORDER_BID,
-        ORDER_ASK
-    }
-
-    enum OrderStatus {
-        UNKNOWN,
-        ORDER_INACTIVE,
-        ORDER_ACTIVE
     }
 
     enum RequestStatus {
@@ -64,21 +53,6 @@ contract Market is Ownable, Pausable {
         uint lastBillTS;
     }
 
-    struct Order {
-        OrderType orderType;
-        OrderStatus orderStatus;
-        address author;
-        address counterparty;
-        uint duration;
-        uint256 price;
-        bool[] netflags;
-        ProfileRegistry.IdentityLevel identityLevel;
-        address blacklist;
-        bytes32 tag;
-        uint64[] benchmarks;
-        uint frozenSum;
-        uint dealID;
-    }
 
     struct ChangeRequest {
         uint dealID;
@@ -89,9 +63,6 @@ contract Market is Ownable, Pausable {
     }
 
     // EVENTS
-
-    event OrderPlaced(uint indexed orderID);
-    event OrderUpdated(uint indexed orderID);
 
     event DealOpened(uint indexed dealID);
     event DealUpdated(uint indexed dealID);
@@ -120,7 +91,9 @@ contract Market is Ownable, Pausable {
 
     ProfileRegistry pr;
 
-    uint ordersAmount = 0;
+    Orders ord;
+
+    Administratum adm;
 
     uint dealAmount = 0;
 
@@ -132,8 +105,6 @@ contract Market is Ownable, Pausable {
     // current length of netflags
     uint netflagsQuantity;
 
-    mapping(uint => Order) public orders;
-
     mapping(uint => Deal) public deals;
 
     mapping(address => uint[]) dealsID;
@@ -142,19 +113,16 @@ contract Market is Ownable, Pausable {
 
     mapping(uint => uint[2]) actualRequests;
 
-    mapping(address => address) masterOf;
-
-    mapping(address => bool) isMaster;
-
-    mapping(address => mapping(address => bool)) masterRequest;
-
     // INIT
 
-    constructor(address _token, address _blacklist, address _oracle, address _profileRegistry, uint _benchmarksQuantity, uint _netflagsQuantity) public {
+    constructor(address _token, address _blacklist, address _oracle, address _profileRegistry, address _administratum, address _orders, uint _benchmarksQuantity, uint _netflagsQuantity) public {
         token = SNM(_token);
         bl = Blacklist(_blacklist);
         oracle = OracleUSD(_oracle);
         pr = ProfileRegistry(_profileRegistry);
+        adm = Administratum(_administratum);
+        ord = Orders(_orders);
+
         benchmarksQuantity = _benchmarksQuantity;
         netflagsQuantity = _netflagsQuantity;
     }
@@ -164,8 +132,8 @@ contract Market is Ownable, Pausable {
     // Order functions
 
     function PlaceOrder(
-        OrderType _orderType,
-        address _id_counterparty,
+        Orders.OrderType _orderType,
+        address _counterpartyID,
         uint _duration,
         uint _price,
         bool[] _netflags,
@@ -173,7 +141,7 @@ contract Market is Ownable, Pausable {
         address _blacklist,
         bytes32 _tag,
         uint64[] _benchmarks
-    ) whenNotPaused public returns (uint){
+    ) whenNotPaused public returns (uint) {
 
         require(_identityLevel >= ProfileRegistry.IdentityLevel.ANONYMOUS);
         require(_netflags.length <= netflagsQuantity);
@@ -185,7 +153,7 @@ contract Market is Ownable, Pausable {
 
         uint lockedSum = 0;
 
-        if (_orderType == OrderType.ORDER_BID) {
+        if (_orderType == Orders.OrderType.ORDER_BID) {
             if (_duration == 0) {
                 lockedSum = CalculatePayment(_price, 1 hours);
             } else if (_duration < 1 days) {
@@ -193,18 +161,15 @@ contract Market is Ownable, Pausable {
             } else {
                 lockedSum = CalculatePayment(_price, 1 days);
             }
-            // this line contains err.
             require(token.transferFrom(msg.sender, this, lockedSum));
         }
 
-        ordersAmount = ordersAmount.add(1);
-        uint256 orderId = ordersAmount;
 
-        orders[orderId] = Order(
+        orderId = ord.Write(
             _orderType,
-            OrderStatus.ORDER_ACTIVE,
+            Orders.OrderStatus.ORDER_ACTIVE,
             msg.sender,
-            _id_counterparty,
+            _counterpartyID,
             _duration,
             _price,
             _netflags,
@@ -215,101 +180,107 @@ contract Market is Ownable, Pausable {
             lockedSum,
             0
         );
-
-        emit OrderPlaced(orderId);
         return orderId;
     }
 
-    function CancelOrder(uint orderID) public returns (bool){
-        require(orderID <= ordersAmount);
-        require(orders[orderID].orderStatus == OrderStatus.ORDER_ACTIVE);
-        require(orders[orderID].author == msg.sender);
+    function CancelOrder(uint orderID) public returns (bool) {
+        require(orderID <= ord.GetOrdersAmount());
+        Orders.Order memory order = Orders.Order(ord.GetOrderInfo(orderID), ord.GetOrderParams(orderID));
+        require(order.OrderParams.orderStatus == OrderStatus.ORDER_ACTIVE);
+        require(order.OrderInfo.author == msg.sender);
 
-        require(token.transfer(msg.sender, orders[orderID].frozenSum));
-        orders[orderID].orderStatus = OrderStatus.ORDER_INACTIVE;
+        require(token.transfer(msg.sender, order.frozenSum));
 
-        emit OrderUpdated(orderID);
+        ord.Cancel(orderID);
+
         return true;
     }
 
     function QuickBuy(uint askID, uint buyoutDuration) public whenNotPaused {
-        Order memory ask = orders[askID];
-        require(ask.orderType == OrderType.ORDER_ASK);
-        require(ask.orderStatus == OrderStatus.ORDER_ACTIVE);
+        Orders.Order memory ask = Orders.Order(ord.GetOrderInfo(askID), ord.GetOrderParams(askID));
+        require(ask.OrderInfo.orderType == Orders.OrderType.ORDER_ASK);
+        require(ask.OrderParams.orderStatus == Orders.OrderStatus.ORDER_ACTIVE);
 
-        require(ask.duration >= buyoutDuration);
-        require(pr.GetProfileLevel(msg.sender) >= ask.identityLevel);
-        require(bl.Check(msg.sender, GetMaster(ask.author)) == false && bl.Check(ask.author, msg.sender) == false);
-        require(bl.Check(ask.blacklist, msg.sender) == false);
+        require(ask.OrderInfo.duration >= buyoutDuration);
+        require(pr.GetProfileLevel(msg.sender) >= ask.OrderInfo.identityLevel);
+        require(bl.Check(ask.OrdersInfo.blacklist, msg.sender) == false);
+        require(
+            bl.Check(msg.sender, adm.GetMaster(ask.author)) == false
+            && bl.Check(ask.OrderInfo.author, msg.sender) == false);
 
         PlaceOrder(
-            OrderType.ORDER_BID,
-            GetMaster(ask.author),
+            Orders.OrderType.ORDER_BID,
+            adm.GetMaster(ask.author),
             buyoutDuration,
-            ask.price,
-            ask.netflags,
+            ask.OrderInfo.price,
+            ask.OrderInfo.netflags,
             ProfileRegistry.IdentityLevel.ANONYMOUS,
             address(0),
             bytes32(0),
-            ask.benchmarks);
+            ask.OrderInfo.benchmarks);
 
-        OpenDeal(askID, GetOrdersAmount());
+        OpenDeal(askID, ord.GetOrdersAmount());
     }
 
     // Deal functions
 
     function OpenDeal(uint _askID, uint _bidID) whenNotPaused public {
-        Order memory ask = orders[_askID];
-        Order memory bid = orders[_bidID];
+        Orders.Order memory ask = Orders.Order(ord.GetOrderInfo(askID), ord.GetOrderParams(askID));
+        Orders.Order memory ask = Orders.Order(ord.GetOrderInfo(bidID), ord.GetOrderParams(bidID));
 
-        require(ask.orderStatus == OrderStatus.ORDER_ACTIVE && bid.orderStatus == OrderStatus.ORDER_ACTIVE);
-        require((ask.counterparty == 0x0 || ask.counterparty == GetMaster(bid.author)) && (bid.counterparty == 0x0 || bid.counterparty == GetMaster(ask.author)));
-        require(ask.orderType == OrderType.ORDER_ASK);
-        require(bid.orderType == OrderType.ORDER_BID);
         require(
-            bl.Check(bid.blacklist, GetMaster(ask.author)) == false
-            && bl.Check(bid.blacklist, ask.author) == false
-            && bl.Check(bid.author, GetMaster(ask.author)) == false
-            && bl.Check(bid.author, ask.author) == false
-            && bl.Check(ask.blacklist, bid.author) == false
-            && bl.Check(GetMaster(ask.author), bid.author) == false
-            && bl.Check(ask.author, bid.author) == false);
-        require(ask.price <= bid.price);
-        require(ask.duration >= bid.duration);
+            ask.OrderParams.orderStatus == Orders.OrderStatus.ORDER_ACTIVE
+            && bid.OrderParams.orderStatus == Orders.OrderStatus.ORDER_ACTIVE);
+        require(
+            (ask.OrderInfo.counterparty == 0x0 || ask.OrderInfo.counterparty == adm.GetMaster(bid.author))
+            && (bid.OrderInfo.counterparty == 0x0 || bid.OrderInfo.counterparty == GetMaster(ask.author)));
+        require(ask.OrderInfo.orderType == Orders.OrderType.ORDER_ASK);
+        require(bid.OrderInfo.orderType == Orders.OrderType.ORDER_BID);
+        require(
+            bl.Check(bid.OrderInfo.blacklist, adm.GetMaster(ask.OrderInfo.author)) == false
+            && bl.Check(bid.OrderInfo.blacklist, ask.OrderInfo.author) == false
+            && bl.Check(bid.OrderInfo.author, adm.GetMaster(ask.author)) == false
+            && bl.Check(bid.OrderInfo.author, ask.OrderInfo.author) == false
+            && bl.Check(ask.OrderInfo.blacklist, bid.OrderInfo.author) == false
+            && bl.Check(adm.GetMaster(ask.OrderInfo.author), bid.OrderInfo.author) == false
+            && bl.Check(ask.OrderInfo.author, bid.OrderInfo.author) == false);
+        require(ask.OrderInfo.price <= bid.OrderInfo.price);
+        require(ask.OrderInfo.duration >= bid.OrderInfo.duration);
         // profile level check
-        require(pr.GetProfileLevel(bid.author) >= ask.identityLevel);
-        require(pr.GetProfileLevel(ask.author) >= bid.identityLevel);
+        require(pr.GetProfileLevel(bid.OrderInfo.author) >= ask.OrderInfo.identityLevel);
+        require(pr.GetProfileLevel(adm.GetMaster(ask.author)) >= bid.OrderInfo.identityLevel); //bug
 
-        if (ask.netflags.length < netflagsQuantity) {
-            ask.netflags = ResizeNetflags(ask.netflags);
+        if (ask.OrderInfo.netflags.length < netflagsQuantity) {
+            ask.OrderInfo.netflags = ResizeNetflags(ask.netflags);
         }
 
-        if (bid.netflags.length < netflagsQuantity) {
-            bid.netflags = ResizeNetflags(ask.netflags);
+        if (bid.OrderInfo.netflags.length < netflagsQuantity) {
+            bid.OrderInfo.netflags = ResizeNetflags(ask.OrderInfo.netflags);
         }
 
-        for (uint i = 0; i < ask.netflags.length; i++) {
+        for (uint i = 0; i < ask.OrderInfo.netflags.length; i++) {
             // implementation: when bid contains requirement, ask necessary needs to have this
             // if ask have this one - pass
-            require(!bid.netflags[i] || ask.netflags[i]);
+            require(!bid.OrderInfo.netflags[i] || ask.OrderInfo.netflags[i]);
         }
 
-        if (ask.benchmarks.length < benchmarksQuantity) {
-            ask.benchmarks = ResizeBenchmarks(ask.benchmarks);
+        if (ask.OrderInfo.benchmarks.length < benchmarksQuantity) {
+            ask.OrderInfo.benchmarks = ResizeBenchmarks(ask.OrderInfo.benchmarks);
         }
 
-        if (bid.benchmarks.length < benchmarksQuantity) {
-            bid.benchmarks = ResizeBenchmarks(bid.benchmarks);
+        if (bid.OrderInfo.benchmarks.length < benchmarksQuantity) {
+            bid.OrderInfo.benchmarks = ResizeBenchmarks(bid.OrderInfo.benchmarks);
         }
 
-        for (i = 0; i < ask.benchmarks.length; i++) {
-            require(ask.benchmarks[i] >= bid.benchmarks[i]);
+        for (i = 0; i < ask.OrderInfo.benchmarks.length; i++) {
+            require(ask.OrderInfo.benchmarks[i] >= bid.OrderInfo.benchmarks[i]);
         }
 
         dealAmount = dealAmount.add(1);
-        address master = GetMaster(ask.author);
-        orders[_askID].orderStatus = OrderStatus.ORDER_INACTIVE;
-        orders[_bidID].orderStatus = OrderStatus.ORDER_INACTIVE;
+        address master = adm.GetMaster(ask.author);
+        ord.Cancel(_askID);
+        ord.Cancel(_bidID);
+        //TODO: FIX AFTER DEALS CRUD IMPLEMENTARTION
         orders[_askID].dealID = dealAmount;
         orders[_bidID].dealID = dealAmount;
 
@@ -322,9 +293,9 @@ contract Market is Ownable, Pausable {
 
         // if deal is normal
         if (ask.duration != 0) {
-            endTime = startTime.add(bid.duration);
+            endTime = startTime.add(bid.OrderInfo.duration);
         }
-        uint blockedBalance = bid.frozenSum;
+        uint blockedBalance = bid.OrderInfo.frozenSum;
         deals[dealAmount] = Deal(ask.benchmarks, ask.author, bid.author, master, _askID, _bidID, bid.duration, ask.price, startTime, endTime, DealStatus.STATUS_ACCEPTED, blockedBalance, 0, block.timestamp);
         emit DealOpened(dealAmount);
     }
@@ -360,7 +331,7 @@ contract Market is Ownable, Pausable {
 
         requestsAmount = requestsAmount.add(1);
 
-        OrderType requestType;
+        Orders.OrderType requestType;
 
         if (msg.sender == deals[dealID].consumerID) {
             requestType = OrderType.ORDER_BID;
@@ -371,7 +342,7 @@ contract Market is Ownable, Pausable {
         requests[requestsAmount] = ChangeRequest(dealID, requestType, newPrice, newDuration, RequestStatus.REQUEST_CREATED);
         emit DealChangeRequestSet(requestsAmount);
 
-        if (requestType == OrderType.ORDER_BID) {
+        if (requestType == Orders.OrderType.ORDER_BID) {
             emit DealChangeRequestUpdated(actualRequests[dealID][1]);
             requests[actualRequests[dealID][1]].status = RequestStatus.REQUEST_CANCELED;
             actualRequests[dealID][1] = requestsAmount;
@@ -402,7 +373,7 @@ contract Market is Ownable, Pausable {
             actualRequests[dealID][1] = requestsAmount;
         }
 
-        if (requestType == OrderType.ORDER_ASK) {
+        if (requestType == Orders.OrderType.ORDER_ASK) {
             emit DealChangeRequestUpdated(actualRequests[dealID][0]);
             requests[actualRequests[dealID][0]].status = RequestStatus.REQUEST_CANCELED;
             actualRequests[dealID][0] = requestsAmount;
@@ -416,7 +387,8 @@ contract Market is Ownable, Pausable {
                 emit DealChangeRequestUpdated(requestsAmount);
             } else if (matchingRequest.status == RequestStatus.REQUEST_CREATED && matchingRequest.duration <= newDuration && matchingRequest.price >= newPrice) {
                 requests[requestsAmount].status = RequestStatus.REQUEST_ACCEPTED;
-                emit DealChangeRequestUpdated(actualRequests[dealID][1]);
+                requests[actualRequests[dealID][1]].status = RequestStatus.REQUEST_ACCEPTED;
+                emit DealChangeRequestUpdated(actualRequests[dealID][1]); //bug
                 actualRequests[dealID][0] = 0;
                 actualRequests[dealID][1] = 0;
                 Bill(dealID);
@@ -437,7 +409,7 @@ contract Market is Ownable, Pausable {
         require(msg.sender == deals[request.dealID].supplierID || msg.sender == deals[request.dealID].masterID || msg.sender == deals[request.dealID].consumerID);
         require(request.status != RequestStatus.REQUEST_ACCEPTED);
 
-        if (request.requestType == OrderType.ORDER_ASK) {
+        if (request.requestType == Orders.OrderType.ORDER_ASK) {
             if (msg.sender == deals[request.dealID].consumerID) {
                 requests[changeRequestID].status = RequestStatus.REQUEST_REJECTED;
             } else {
@@ -447,7 +419,7 @@ contract Market is Ownable, Pausable {
             emit DealChangeRequestUpdated(changeRequestID);
         }
 
-        if (request.requestType == OrderType.ORDER_BID) {
+        if (request.requestType == Orders.OrderType.ORDER_BID) {
             if (msg.sender == deals[request.dealID].consumerID) {
                 requests[changeRequestID].status = RequestStatus.REQUEST_CANCELED;
             } else {
@@ -459,77 +431,8 @@ contract Market is Ownable, Pausable {
         return true;
     }
 
-    // Master-worker functions
-
-    function RegisterWorker(address _master) public whenNotPaused returns (bool) {
-        require(GetMaster(msg.sender) == msg.sender);
-        require(isMaster[msg.sender] == false);
-        require(GetMaster(_master) == _master);
-        masterRequest[_master][msg.sender] = true;
-        emit WorkerAnnounced(msg.sender, _master);
-        return true;
-    }
-
-    function ConfirmWorker(address _worker) public whenNotPaused returns (bool) {
-        require(masterRequest[msg.sender][_worker] == true);
-        masterOf[_worker] = msg.sender;
-        isMaster[msg.sender] = true;
-        delete masterRequest[msg.sender][_worker];
-        emit WorkerConfirmed(_worker, msg.sender);
-        return true;
-    }
-
-    function RemoveWorker(address _worker, address _master) public whenNotPaused returns (bool) {
-        require(GetMaster(_worker) == _master && (msg.sender == _worker || msg.sender == _master));
-        delete masterOf[_worker];
-        emit WorkerRemoved(_worker, _master);
-        return true;
-    }
 
     // GETTERS
-
-    function GetOrderInfo(uint orderID) view public
-    returns (
-        OrderType orderType,
-        address author,
-        address counterparty,
-        uint duration,
-        uint price,
-        bool[] netflags,
-        ProfileRegistry.IdentityLevel identityLevel,
-        address blacklist,
-        bytes32 tag,
-        uint64[] benchmarks,
-        uint frozenSum
-    ){
-        Order memory order = orders[orderID];
-        return (
-        order.orderType,
-        order.author,
-        order.counterparty,
-        order.duration,
-        order.price,
-        order.netflags,
-        order.identityLevel,
-        order.blacklist,
-        order.tag,
-        order.benchmarks,
-        order.frozenSum
-        );
-    }
-
-
-    function GetOrderParams(uint orderID) view public
-    returns (
-        OrderStatus orderStatus,
-        uint dealID
-    ){
-        Order memory order = orders[orderID];
-        return (
-        order.orderStatus,
-        order.dealID
-        );
-    }
 
     function GetDealInfo(uint dealID) view public
     returns (
@@ -574,18 +477,11 @@ contract Market is Ownable, Pausable {
         );
     }
 
-    function GetMaster(address _worker) view public returns (address master) {
-        if (masterOf[_worker] == 0x0 || masterOf[_worker] == _worker) {
-            master = _worker;
-        } else {
-            master = masterOf[_worker];
-        }
-    }
 
     function GetChangeRequestInfo(uint changeRequestID) view public
     returns (
         uint dealID,
-        OrderType requestType,
+        Orders.OrderType requestType,
         uint price,
         uint duration,
         RequestStatus status
@@ -601,10 +497,6 @@ contract Market is Ownable, Pausable {
 
     function GetDealsAmount() public view returns (uint){
         return dealAmount;
-    }
-
-    function GetOrdersAmount() public view returns (uint){
-        return ordersAmount;
     }
 
     function GetChangeRequestsAmount() public view returns (uint){
