@@ -69,13 +69,18 @@ var dealListCmd = &cobra.Command{
 			return fmt.Errorf("cannot create client connection: %v", err)
 		}
 
+		ethAddr, err := keystore.GetDefaultAddress()
+		if err != nil {
+			return fmt.Errorf("cannot get default key: %v", err)
+		}
+
 		req := &pb.Count{Count: dealsSearchCount}
 		deals, err := dealer.List(ctx, req)
 		if err != nil {
 			return fmt.Errorf("cannot get deals list: %v", err)
 		}
 
-		printDealsList(cmd, deals.GetDeal())
+		printDealsList(cmd, ethAddr, deals.GetDeal())
 		return nil
 	},
 }

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/olekukonko/tablewriter"
 	pb "github.com/sonm-io/core/proto"
@@ -356,7 +357,27 @@ func getDealCounterpartyString(d *pb.Deal) string {
 	}
 }
 
-func printDealsList(cmd *cobra.Command, deals []*pb.Deal) {
+func dealsExpensesPerHour(addr common.Address, deals []*pb.Deal) (*pb.BigInt, *pb.BigInt) {
+	inAsks := big.NewInt(0)
+	inBids := big.NewInt(0)
+
+	for _, deal := range deals {
+		if deal.GetSupplierID().Unwrap() == addr || deal.GetMasterID().Unwrap() == addr {
+			inAsks = big.NewInt(0).Add(inAsks, deal.GetPrice().Unwrap())
+		} else {
+			inBids = big.NewInt(0).Add(inBids, deal.GetPrice().Unwrap())
+		}
+	}
+
+	inAsks = big.NewInt(0).Mul(big.NewInt(3600), inAsks)
+	inBids = big.NewInt(0).Mul(big.NewInt(3600), inBids)
+
+	return pb.NewBigInt(inAsks), pb.NewBigInt(inBids)
+}
+
+func printDealsList(cmd *cobra.Command, addr common.Address, deals []*pb.Deal) {
+	asks, bids := dealsExpensesPerHour(addr, deals)
+
 	if isSimpleFormat() {
 		if len(deals) == 0 {
 			cmd.Println("No deals found")
@@ -365,7 +386,8 @@ func printDealsList(cmd *cobra.Command, deals []*pb.Deal) {
 
 		w := tablewriter.NewWriter(cmd.OutOrStdout())
 		w.SetHeader([]string{"ID", "price", "started at", "duration", "counterparty"})
-		w.SetCaption(true, fmt.Sprintf("count: %d", len(deals)))
+		w.SetCaption(true, fmt.Sprintf("count: %d  ASKs: %s USD/h  BIDs: %s USD/h",
+			len(deals), asks.ToPriceString(), bids.ToPriceString()))
 		w.SetBorder(false)
 		for _, deal := range deals {
 			var duration string
@@ -388,9 +410,12 @@ func printDealsList(cmd *cobra.Command, deals []*pb.Deal) {
 
 		w.Render()
 	} else {
-		showJSON(cmd, map[string]interface{}{"deals": deals})
+		showJSON(cmd, map[string]interface{}{"" +
+			"deals": deals,
+			"asks_per_hour": asks.ToPriceString(),
+			"bids_per_hour": bids.ToPriceString(),
+		})
 	}
-
 }
 
 type ExtendedDealInfo struct {
