@@ -365,7 +365,7 @@ var taskStopCmd = &cobra.Command{
 		}
 
 		if len(errs.GetResponse()) > 0 {
-			printStringErrorsById(cmd, errs)
+			printErrorsByStringID(cmd, errs)
 			return nil
 		}
 
