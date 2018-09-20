@@ -354,9 +354,9 @@ var taskStopCmd = &cobra.Command{
 			return nil
 		}
 
-		req := &sonm.TaskID{
-			Id:     args[1],
-			DealID: dealID,
+		req := &sonm.StopTasksRequest{
+			DealID:  dealID,
+			TaskIDs: args[1:],
 		}
 
 		errs, err := node.StopTasks(ctx, req)
@@ -364,12 +364,7 @@ var taskStopCmd = &cobra.Command{
 			return fmt.Errorf("cannot stop task(s): %v", err)
 		}
 
-		if len(errs.GetResponse()) > 0 {
-			printErrorsByStringID(cmd, errs)
-			return nil
-		}
-
-		showOk(cmd)
+		printErrorByID(cmd, newTupleFromString(errs))
 		return nil
 	},
 }

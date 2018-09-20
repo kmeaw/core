@@ -519,31 +519,43 @@ func printDealInfo(cmd *cobra.Command, info *ExtendedDealInfo, flags printerFlag
 	}
 }
 
-func printErrorById(cmd *cobra.Command, errors *sonm.ErrorByID) {
-	if isSimpleFormat() {
-		for _, err := range errors.GetResponse() {
-			status := "OK"
-			if len(err.Error) != 0 {
-				status = "FAIL: " + err.Error
-			}
-			cmd.Printf("ID %s: %s\n", err.Id.Unwrap().String(), status)
-		}
-	} else {
-		showJSON(cmd, errors.GetResponse())
-	}
+type IDErrorTuple struct {
+	ID  string `json:"id"`
+	Err string `json:"err"`
 }
 
-func printErrorsByStringID(cmd *cobra.Command, errors *pb.ErrorByStringID) {
+func (m *IDErrorTuple) status() string {
+	status := "OK"
+	if len(m.Err) != 0 {
+		status = "FAIL: " + m.Err
+	}
+
+	return status
+}
+
+func newTupleFromErrors(status *sonm.ErrorByID) []IDErrorTuple {
+	var tuples []IDErrorTuple
+	for _, err := range status.GetResponse() {
+		tuples = append(tuples, IDErrorTuple{ID: err.GetId().Unwrap().String(), Err: err.GetError()})
+	}
+	return tuples
+}
+
+func newTupleFromString(status *sonm.ErrorByStringID) []IDErrorTuple {
+	var tuples []IDErrorTuple
+	for _, err := range status.GetResponse() {
+		tuples = append(tuples, IDErrorTuple{ID: err.GetID(), Err: err.GetError()})
+	}
+	return tuples
+}
+
+func printErrorByID(cmd *cobra.Command, errors []IDErrorTuple) {
 	if isSimpleFormat() {
-		for _, err := range errors.GetResponse() {
-			status := "OK"
-			if len(err.Error) != 0 {
-				status = "FAIL: " + err.GetError()
-			}
-			cmd.Printf("ID %s: %s\n", err.GetID(), status)
+		for _, tuple := range errors {
+			cmd.Printf("ID %s: %s\n", tuple.ID, tuple.status())
 		}
 	} else {
-		showJSON(cmd, errors.GetResponse())
+		showJSON(cmd, errors)
 	}
 }
 
