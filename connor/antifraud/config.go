@@ -12,6 +12,7 @@ type ProcessorConfig struct {
 	TrackInterval   time.Duration `yaml:"track_interval" default:"10s"`
 	TaskWarmupDelay time.Duration `yaml:"warmup_delay" required:"true"`
 	DecayTime       float64       `yaml:"decay_time" required:"true"`
+	URL             string        `yaml:"url"`
 	LogDir          string        `yaml:"log_dir"`
 }
 
