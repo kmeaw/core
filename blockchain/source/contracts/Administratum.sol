@@ -2,7 +2,7 @@ pragma solidity ^0.4.23;
 
 import "zeppelin-solidity/contracts/ownership/Ownable.sol";
 
-contract Administratum() is Ownable{
+contract Administratum is Ownable{
     // events
 
 
@@ -44,7 +44,7 @@ contract Administratum() is Ownable{
     }
 
     function ConfirmWorker(address _worker) public returns (bool) {
-        require(masterRequest[msg.sender][_worker] == true ||  IsValid(_worker)){
+        require(masterRequest[msg.sender][_worker] == true ||  IsValid(_worker));
         masterOf[_worker] = msg.sender;
         isMaster[msg.sender] = true;
         delete masterRequest[msg.sender][_worker];
@@ -82,8 +82,8 @@ contract Administratum() is Ownable{
     //INTERNAL
     // check if transaction sended by valid admin
     function IsValid(address _worker) view internal returns(bool){
-        address memory master = admins[msg.sender];
-        return admins[msg.sender] != address(0) && masterRequest[master][worker] == true;
+        address master = admins[msg.sender];
+        return admins[msg.sender] != address(0) && masterRequest[master][_worker] == true;
     }
 
 
