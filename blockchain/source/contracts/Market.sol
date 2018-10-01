@@ -8,6 +8,8 @@ import "./Blacklist.sol";
 import "./OracleUSD.sol";
 import "./ProfileRegistry.sol";
 import "./Administratum.sol";
+import "./Orders.sol";
+import "./Deals.sol";
 
 
 contract Market is Ownable, Pausable {
@@ -16,11 +18,6 @@ contract Market is Ownable, Pausable {
 
     // DECLARATIONS
 
-    enum DealStatus{
-        STATUS_UNKNOWN,
-        STATUS_ACCEPTED,
-        STATUS_CLOSED
-    }
 
     enum RequestStatus {
         REQUEST_UNKNOWN,
@@ -36,33 +33,18 @@ contract Market is Ownable, Pausable {
         BLACKLIST_MASTER
     }
 
-    struct Deal {
-        uint64[] benchmarks;
-        address supplierID;
-        address consumerID;
-        address masterID;
-        uint askID;
-        uint bidID;
-        uint duration;
-        uint price; //usd * 10^-18
-        uint startTime;
-        uint endTime;
-        DealStatus status;
-        uint blockedBalance;
-        uint totalPayout;
-        uint lastBillTS;
-    }
-
 
     struct ChangeRequest {
         uint dealID;
-        OrderType requestType;
+        Orders.OrderType requestType;
         uint price;
         uint duration;
         RequestStatus status;
     }
 
     // EVENTS
+    event OrderPlaced(uint indexed orderID);
+    event OrderUpdated(uint indexed orderID);
 
     event DealOpened(uint indexed dealID);
     event DealUpdated(uint indexed dealID);
@@ -95,7 +77,7 @@ contract Market is Ownable, Pausable {
 
     Administratum adm;
 
-    uint dealAmount = 0;
+    Deals dl;
 
     uint requestsAmount = 0;
 
@@ -105,23 +87,28 @@ contract Market is Ownable, Pausable {
     // current length of netflags
     uint netflagsQuantity;
 
-    mapping(uint => Deal) public deals;
-
-    mapping(address => uint[]) dealsID;
-
     mapping(uint => ChangeRequest) requests;
 
     mapping(uint => uint[2]) actualRequests;
 
     // INIT
 
-    constructor(address _token, address _blacklist, address _oracle, address _profileRegistry, address _administratum, address _orders, uint _benchmarksQuantity, uint _netflagsQuantity) public {
+    constructor(address _token,
+        address _blacklist,
+        address _oracle,
+        address _profileRegistry,
+        address _administratum,
+        address _orders,
+        address _deals,
+        uint _benchmarksQuantity,
+        uint _netflagsQuantity) public {
         token = SNM(_token);
         bl = Blacklist(_blacklist);
         oracle = OracleUSD(_oracle);
         pr = ProfileRegistry(_profileRegistry);
         adm = Administratum(_administratum);
         ord = Orders(_orders);
+        dl = Deals(_deals);
 
         benchmarksQuantity = _benchmarksQuantity;
         netflagsQuantity = _netflagsQuantity;
@@ -165,7 +152,7 @@ contract Market is Ownable, Pausable {
         }
 
 
-        orderId = ord.Write(
+        uint orderID = ord.Write(
             _orderType,
             Orders.OrderStatus.ORDER_ACTIVE,
             msg.sender,
@@ -180,44 +167,86 @@ contract Market is Ownable, Pausable {
             lockedSum,
             0
         );
-        return orderId;
+
+        emit OrderPlaced(orderID);
+
+        return orderID;
     }
 
     function CancelOrder(uint orderID) public returns (bool) {
         require(orderID <= ord.GetOrdersAmount());
-        Orders.Order memory order = Orders.Order(ord.GetOrderInfo(orderID), ord.GetOrderParams(orderID));
-        require(order.OrderParams.orderStatus == OrderStatus.ORDER_ACTIVE);
-        require(order.OrderInfo.author == msg.sender);
 
-        require(token.transfer(msg.sender, order.frozenSum));
+        (, address author, , , , , , , , , uint frozenSum ) = ord.GetOrderInfo(orderID);
 
-        ord.Cancel(orderID);
+        (Orders.OrderStatus orderStatus, ) = ord.GetOrderParams(orderID);
+
+
+        require(orderStatus == Orders.OrderStatus.ORDER_ACTIVE);
+        require(author == msg.sender || adm.GetMaster(author) == msg.sender);
+
+        require(token.transfer(msg.sender, frozenSum));
+
+        ord.SetOrderStatus(orderID, Orders.OrderStatus.ORDER_INACTIVE);
+
+        emit OrderUpdated(orderID);
 
         return true;
     }
 
     function QuickBuy(uint askID, uint buyoutDuration) public whenNotPaused {
-        Orders.Order memory ask = Orders.Order(ord.GetOrderInfo(askID), ord.GetOrderParams(askID));
-        require(ask.OrderInfo.orderType == Orders.OrderType.ORDER_ASK);
-        require(ask.OrderParams.orderStatus == Orders.OrderStatus.ORDER_ACTIVE);
+        (
+        Orders.OrderType orderType,
+        address author,
+        address counterparty,
+        uint duration,
+        uint price,
+        bool[] memory netflags,
+        ProfileRegistry.IdentityLevel identityLevel,
+        address blacklist,
+        bytes32 tag,
+        uint64[] memory benchmarks,
+        uint frozenSum) = ord.GetOrderInfo(askID);
 
-        require(ask.OrderInfo.duration >= buyoutDuration);
-        require(pr.GetProfileLevel(msg.sender) >= ask.OrderInfo.identityLevel);
-        require(bl.Check(ask.OrdersInfo.blacklist, msg.sender) == false);
+        Orders.OrderInfo memory info = Orders.OrderInfo(orderType,
+            author,
+            counterparty,
+            duration,
+            price,
+            netflags,
+            identityLevel,
+            blacklist,
+            tag,
+            benchmarks,
+            frozenSum);
+
+        (
+        Orders.OrderStatus orderStatus,
+        uint dealID) = ord.GetOrderParams(askID);
+
+        Orders.OrderParams memory params = Orders.OrderParams(orderStatus, dealID);
+
+        Orders.Order memory ask = Orders.Order(info, params);
+
+        require(ask.info.orderType == Orders.OrderType.ORDER_ASK);
+        require(ask.params.orderStatus == Orders.OrderStatus.ORDER_ACTIVE);
+
+        require(ask.info.duration >= buyoutDuration);
+        require(pr.GetProfileLevel(msg.sender) >= ask.info.identityLevel);
+        require(bl.Check(ask.info.blacklist, msg.sender) == false);
         require(
-            bl.Check(msg.sender, adm.GetMaster(ask.author)) == false
-            && bl.Check(ask.OrderInfo.author, msg.sender) == false);
+            bl.Check(msg.sender, adm.GetMaster(ask.info.author)) == false
+            && bl.Check(ask.info.author, msg.sender) == false);
 
         PlaceOrder(
             Orders.OrderType.ORDER_BID,
-            adm.GetMaster(ask.author),
+            adm.GetMaster(ask.info.author),
             buyoutDuration,
-            ask.OrderInfo.price,
-            ask.OrderInfo.netflags,
+            ask.info.price,
+            ask.info.netflags,
             ProfileRegistry.IdentityLevel.ANONYMOUS,
             address(0),
             bytes32(0),
-            ask.OrderInfo.benchmarks);
+            ask.info.benchmarks);
 
         OpenDeal(askID, ord.GetOrdersAmount());
     }
@@ -225,64 +254,120 @@ contract Market is Ownable, Pausable {
     // Deal functions
 
     function OpenDeal(uint _askID, uint _bidID) whenNotPaused public {
-        Orders.Order memory ask = Orders.Order(ord.GetOrderInfo(askID), ord.GetOrderParams(askID));
-        Orders.Order memory ask = Orders.Order(ord.GetOrderInfo(bidID), ord.GetOrderParams(bidID));
+        (
+        Orders.OrderType orderType,
+        address author,
+        address counterparty,
+        uint duration,
+        uint price,
+        bool[] memory netflags,
+        ProfileRegistry.IdentityLevel identityLevel,
+        address blacklist,
+        bytes32 tag,
+        uint64[] memory benchmarks,
+        uint frozenSum) = ord.GetOrderInfo(_askID);
+
+        Orders.OrderInfo memory info = Orders.OrderInfo(orderType,
+            author,
+            counterparty,
+            duration,
+            price,
+            netflags,
+            identityLevel,
+            blacklist,
+            tag,
+            benchmarks,
+            frozenSum);
+
+        (Orders.OrderStatus orderStatus, uint dealID) = ord.GetOrderParams(_askID);
+
+        Orders.OrderParams memory params = Orders.OrderParams(orderStatus, dealID);
+
+        Orders.Order memory ask = Orders.Order(info, params);
+
+        (
+        orderType,
+        author,
+        counterparty,
+        duration,
+        price,
+        netflags,
+        identityLevel,
+        blacklist,
+        tag,
+        benchmarks,
+        frozenSum) = ord.GetOrderInfo(_bidID);
+
+        info = Orders.OrderInfo(orderType,
+            author,
+            counterparty,
+            duration,
+            price,
+            netflags,
+            identityLevel,
+            blacklist,
+            tag,
+            benchmarks,
+            frozenSum);
+
+        (orderStatus, dealID) = ord.GetOrderParams(_bidID);
+
+        params = Orders.OrderParams(orderStatus, dealID);
+
+        Orders.Order memory bid = Orders.Order(info, params);
 
         require(
-            ask.OrderParams.orderStatus == Orders.OrderStatus.ORDER_ACTIVE
-            && bid.OrderParams.orderStatus == Orders.OrderStatus.ORDER_ACTIVE);
+            ask.params.orderStatus == Orders.OrderStatus.ORDER_ACTIVE
+            && bid.params.orderStatus == Orders.OrderStatus.ORDER_ACTIVE);
         require(
-            (ask.OrderInfo.counterparty == 0x0 || ask.OrderInfo.counterparty == adm.GetMaster(bid.author))
-            && (bid.OrderInfo.counterparty == 0x0 || bid.OrderInfo.counterparty == GetMaster(ask.author)));
-        require(ask.OrderInfo.orderType == Orders.OrderType.ORDER_ASK);
-        require(bid.OrderInfo.orderType == Orders.OrderType.ORDER_BID);
+            (ask.info.counterparty == 0x0 || ask.info.counterparty == adm.GetMaster(bid.info.author))
+            && (bid.info.counterparty == 0x0 || bid.info.counterparty == adm.GetMaster(ask.info.author)));
+        require(ask.info.orderType == Orders.OrderType.ORDER_ASK);
+        require(bid.info.orderType == Orders.OrderType.ORDER_BID);
         require(
-            bl.Check(bid.OrderInfo.blacklist, adm.GetMaster(ask.OrderInfo.author)) == false
-            && bl.Check(bid.OrderInfo.blacklist, ask.OrderInfo.author) == false
-            && bl.Check(bid.OrderInfo.author, adm.GetMaster(ask.author)) == false
-            && bl.Check(bid.OrderInfo.author, ask.OrderInfo.author) == false
-            && bl.Check(ask.OrderInfo.blacklist, bid.OrderInfo.author) == false
-            && bl.Check(adm.GetMaster(ask.OrderInfo.author), bid.OrderInfo.author) == false
-            && bl.Check(ask.OrderInfo.author, bid.OrderInfo.author) == false);
-        require(ask.OrderInfo.price <= bid.OrderInfo.price);
-        require(ask.OrderInfo.duration >= bid.OrderInfo.duration);
+            bl.Check(bid.info.blacklist, adm.GetMaster(ask.info.author)) == false
+            && bl.Check(bid.info.blacklist, ask.info.author) == false
+            && bl.Check(bid.info.author, adm.GetMaster(ask.info.author)) == false
+            && bl.Check(bid.info.author, ask.info.author) == false
+            && bl.Check(ask.info.blacklist, bid.info.author) == false
+            && bl.Check(adm.GetMaster(ask.info.author), bid.info.author) == false
+            && bl.Check(ask.info.author, bid.info.author) == false);
+        require(ask.info.price <= bid.info.price);
+        require(ask.info.duration >= bid.info.duration);
         // profile level check
-        require(pr.GetProfileLevel(bid.OrderInfo.author) >= ask.OrderInfo.identityLevel);
-        require(pr.GetProfileLevel(adm.GetMaster(ask.author)) >= bid.OrderInfo.identityLevel); //bug
+        require(pr.GetProfileLevel(bid.info.author) >= ask.info.identityLevel);
+        require(pr.GetProfileLevel(adm.GetMaster(ask.info.author)) >= bid.info.identityLevel); //bug
 
-        if (ask.OrderInfo.netflags.length < netflagsQuantity) {
-            ask.OrderInfo.netflags = ResizeNetflags(ask.netflags);
+        if (ask.info.netflags.length < netflagsQuantity) {
+            ask.info.netflags = ResizeNetflags(ask.info.netflags);
         }
 
-        if (bid.OrderInfo.netflags.length < netflagsQuantity) {
-            bid.OrderInfo.netflags = ResizeNetflags(ask.OrderInfo.netflags);
+        if (bid.info.netflags.length < netflagsQuantity) {
+            bid.info.netflags = ResizeNetflags(ask.info.netflags);
         }
 
-        for (uint i = 0; i < ask.OrderInfo.netflags.length; i++) {
+        for (uint i = 0; i < ask.info.netflags.length; i++) {
             // implementation: when bid contains requirement, ask necessary needs to have this
             // if ask have this one - pass
-            require(!bid.OrderInfo.netflags[i] || ask.OrderInfo.netflags[i]);
+            require(!bid.info.netflags[i] || ask.info.netflags[i]);
         }
 
-        if (ask.OrderInfo.benchmarks.length < benchmarksQuantity) {
-            ask.OrderInfo.benchmarks = ResizeBenchmarks(ask.OrderInfo.benchmarks);
+        if (ask.info.benchmarks.length < benchmarksQuantity) {
+            ask.info.benchmarks = ResizeBenchmarks(ask.info.benchmarks);
         }
 
-        if (bid.OrderInfo.benchmarks.length < benchmarksQuantity) {
-            bid.OrderInfo.benchmarks = ResizeBenchmarks(bid.OrderInfo.benchmarks);
+        if (bid.info.benchmarks.length < benchmarksQuantity) {
+            bid.info.benchmarks = ResizeBenchmarks(bid.info.benchmarks);
         }
 
-        for (i = 0; i < ask.OrderInfo.benchmarks.length; i++) {
-            require(ask.OrderInfo.benchmarks[i] >= bid.OrderInfo.benchmarks[i]);
+        for (i = 0; i < ask.info.benchmarks.length; i++) {
+            require(ask.info.benchmarks[i] >= bid.info.benchmarks[i]);
         }
 
-        dealAmount = dealAmount.add(1);
-        address master = adm.GetMaster(ask.author);
-        ord.Cancel(_askID);
-        ord.Cancel(_bidID);
+        address master = adm.GetMaster(ask.info.author);
+        ord.SetOrderStatus(_askID, Orders.OrderStatus.ORDER_INACTIVE);
+        ord.SetOrderStatus(_bidID, Orders.OrderStatus.ORDER_INACTIVE);
         //TODO: FIX AFTER DEALS CRUD IMPLEMENTARTION
-        orders[_askID].dealID = dealAmount;
-        orders[_bidID].dealID = dealAmount;
 
         emit OrderUpdated(_askID);
         emit OrderUpdated(_bidID);
@@ -292,21 +377,76 @@ contract Market is Ownable, Pausable {
         // `0` - for spot deal
 
         // if deal is normal
-        if (ask.duration != 0) {
-            endTime = startTime.add(bid.OrderInfo.duration);
+        if (ask.info.duration != 0) {
+            endTime = startTime.add(bid.info.duration);
         }
-        uint blockedBalance = bid.OrderInfo.frozenSum;
-        deals[dealAmount] = Deal(ask.benchmarks, ask.author, bid.author, master, _askID, _bidID, bid.duration, ask.price, startTime, endTime, DealStatus.STATUS_ACCEPTED, blockedBalance, 0, block.timestamp);
-        emit DealOpened(dealAmount);
+        uint blockedBalance = bid.info.frozenSum;
+        dealID = dl.Write(ask.info.benchmarks,
+            ask.info.author,
+            bid.info.author,
+            master,
+            _askID,
+            _bidID,
+            bid.info.duration,
+            ask.info.price,
+            startTime,
+            endTime,
+            Deals.DealStatus.STATUS_ACCEPTED,
+            blockedBalance,
+            0,
+            block.timestamp);
+
+        emit DealOpened(dealID);
+
+        ord.SetOrderDealID(_askID, dealID);
+        ord.SetOrderDealID(_bidID, dealID);
     }
 
-    function CloseDeal(uint dealID, BlacklistPerson blacklisted) public returns (bool){
-        require((deals[dealID].status == DealStatus.STATUS_ACCEPTED));
-        require(msg.sender == deals[dealID].supplierID || msg.sender == deals[dealID].consumerID || msg.sender == deals[dealID].masterID);
+    function CloseDeal(uint dealID, BlacklistPerson blacklisted) public returns (bool) {
+        (
+        uint64[] memory benchmarks,
+        address supplierID,
+        address consumerID,
+        address masterID,
+        uint askID,
+        uint bidID,
+        uint startTime) = dl.GetDealInfo(dealID);
 
-        if (block.timestamp <= deals[dealID].startTime.add(deals[dealID].duration)) {
+        Deals.DealInfo memory info = Deals.DealInfo(benchmarks,
+            supplierID,
+            consumerID,
+            masterID,
+            askID,
+            bidID,
+            startTime);
+
+        (
+        uint duration,
+        uint price,
+        uint endTime,
+        Deals.DealStatus status,
+        uint blockedBalance,
+        uint totalPayout,
+        uint lastBillTS) = dl.GetDealParams(dealID);
+
+        Deals.DealParams memory params = Deals.DealParams(duration,
+            price,
+            endTime,
+            status,
+            blockedBalance,
+            totalPayout,
+            lastBillTS);
+
+        Deals.Deal memory deal = Deals.Deal(info, params);
+
+        require((deal.params.status == Deals.DealStatus.STATUS_ACCEPTED));
+        require(msg.sender == deal.info.supplierID
+            || msg.sender == deal.info.consumerID
+            || msg.sender == deal.info.masterID);
+
+        if (block.timestamp <= deal.info.startTime.add(deal.params.duration)) {
             // after endTime
-            require(deals[dealID].consumerID == msg.sender);
+            require(deal.info.consumerID == msg.sender);
         }
         AddToBlacklist(dealID, blacklisted);
         InternalBill(dealID);
@@ -321,11 +461,14 @@ contract Market is Ownable, Pausable {
         return true;
     }
 
-    function CreateChangeRequest(uint dealID, uint newPrice, uint newDuration) public returns (uint changeRequestID) {
-        require(msg.sender == deals[dealID].consumerID || msg.sender == deals[dealID].masterID || msg.sender == deals[dealID].supplierID);
-        require(deals[dealID].status == DealStatus.STATUS_ACCEPTED);
+    /* function CreateChangeRequest(uint dealID, uint newPrice, uint newDuration) public returns (uint changeRequestID) {
+        Deals.Deal memory deal = Deals.Deal(dl.GetDealInfo(dealID), dl.GetDealParams(dealID));
+        require(msg.sender == deal.info.consumerID
+            || msg.sender == deal.info.masterID
+            || msg.sender == deal.info.supplierID);
+        require(deal.params.status == Deals.DealStatus.STATUS_ACCEPTED);
 
-        if (IsSpot(dealID)) {
+        if (deal.params.duration == 0) {
             require(newDuration == 0);
         }
 
@@ -333,10 +476,10 @@ contract Market is Ownable, Pausable {
 
         Orders.OrderType requestType;
 
-        if (msg.sender == deals[dealID].consumerID) {
-            requestType = OrderType.ORDER_BID;
+        if (msg.sender == deal.info.consumerID) {
+            requestType = Orders.OderType.ORDER_BID;
         } else {
-            requestType = OrderType.ORDER_ASK;
+            requestType = Orders.OrderType.ORDER_ASK;
         }
 
         requests[requestsAmount] = ChangeRequest(dealID, requestType, newPrice, newDuration, RequestStatus.REQUEST_CREATED);
@@ -351,7 +494,7 @@ contract Market is Ownable, Pausable {
             if (newDuration == deals[dealID].duration && newPrice > deals[dealID].price) {
                 requests[requestsAmount].status = RequestStatus.REQUEST_ACCEPTED;
                 Bill(dealID);
-                deals[dealID].price = newPrice;
+                deal.params.price = newPrice;
                 actualRequests[dealID][1] = 0;
                 emit DealChangeRequestUpdated(requestsAmount);
             } else if (matchingRequest.status == RequestStatus.REQUEST_CREATED && matchingRequest.duration >= newDuration && matchingRequest.price <= newPrice) {
@@ -361,8 +504,9 @@ contract Market is Ownable, Pausable {
                 actualRequests[dealID][0] = 0;
                 actualRequests[dealID][1] = 0;
                 Bill(dealID);
-                deals[dealID].price = matchingRequest.price;
-                deals[dealID].duration = newDuration;
+                !!!!!!
+                deal.params.price = matchingRequest.price;
+                deal.params.duration = newDuration;
                 emit DealChangeRequestUpdated(requestsAmount);
             } else {
                 return requestsAmount;
@@ -429,53 +573,10 @@ contract Market is Ownable, Pausable {
             emit DealChangeRequestUpdated(changeRequestID);
         }
         return true;
-    }
+    } */
 
 
     // GETTERS
-
-    function GetDealInfo(uint dealID) view public
-    returns (
-        uint64[] benchmarks,
-        address supplierID,
-        address consumerID,
-        address masterID,
-        uint askID,
-        uint bidID,
-        uint startTime
-    ){
-        return (
-        deals[dealID].benchmarks,
-        deals[dealID].supplierID,
-        deals[dealID].consumerID,
-        deals[dealID].masterID,
-        deals[dealID].askID,
-        deals[dealID].bidID,
-        deals[dealID].startTime
-
-        );
-    }
-
-    function GetDealParams(uint dealID) view public
-    returns (
-        uint duration,
-        uint price,
-        uint endTime,
-        DealStatus status,
-        uint blockedBalance,
-        uint totalPayout,
-        uint lastBillTS
-    ){
-        return (
-        deals[dealID].duration,
-        deals[dealID].price,
-        deals[dealID].endTime,
-        deals[dealID].status,
-        deals[dealID].blockedBalance,
-        deals[dealID].totalPayout,
-        deals[dealID].lastBillTS
-        );
-    }
 
 
     function GetChangeRequestInfo(uint changeRequestID) view public
@@ -485,7 +586,7 @@ contract Market is Ownable, Pausable {
         uint price,
         uint duration,
         RequestStatus status
-    ){
+    ) {
         return (
         requests[changeRequestID].dealID,
         requests[changeRequestID].requestType,
@@ -493,10 +594,6 @@ contract Market is Ownable, Pausable {
         requests[changeRequestID].duration,
         requests[changeRequestID].status
         );
-    }
-
-    function GetDealsAmount() public view returns (uint){
-        return dealAmount;
     }
 
     function GetChangeRequestsAmount() public view returns (uint){
@@ -515,72 +612,132 @@ contract Market is Ownable, Pausable {
     // INTERNAL
 
     function InternalBill(uint dealID) internal returns (bool){
-        require(deals[dealID].status == DealStatus.STATUS_ACCEPTED);
-        require(msg.sender == deals[dealID].supplierID || msg.sender == deals[dealID].consumerID || msg.sender == deals[dealID].masterID);
-        Deal memory deal = deals[dealID];
+        (
+        uint64[] memory benchmarks,
+        address supplierID,
+        address consumerID,
+        address masterID,
+        uint askID,
+        uint bidID,
+        uint startTime) = dl.GetDealInfo(dealID);
 
+        Deals.DealInfo memory info = Deals.DealInfo(benchmarks,
+            supplierID,
+            consumerID,
+            masterID,
+            askID,
+            bidID,
+            startTime);
+
+        (
+        uint duration,
+        uint price,
+        uint endTime,
+        Deals.DealStatus status,
+        uint blockedBalance,
+        uint totalPayout,
+        uint lastBillTS) = dl.GetDealParams(dealID);
+
+        Deals.DealParams memory params = Deals.DealParams(duration,
+            price,
+            endTime,
+            status,
+            blockedBalance,
+            totalPayout,
+            lastBillTS);
+
+        Deals.Deal memory deal = Deals.Deal(info, params);
+
+        require(deal.params.status == Deals.DealStatus.STATUS_ACCEPTED);
+        require(msg.sender == deal.info.supplierID
+            || msg.sender == deal.info.consumerID
+            || msg.sender == deal.info.masterID);
         uint paidAmount;
 
-        if (!IsSpot(dealID) && deal.lastBillTS >= deal.endTime) {
+        if (deal.params.duration != 0 && deal.params.lastBillTS >= deal.params.endTime) {
             // means we already billed deal after endTime
             return true;
-        } else if (!IsSpot(dealID) && block.timestamp > deal.endTime && deal.lastBillTS < deal.endTime) {
-            paidAmount = CalculatePayment(deal.price, deal.endTime.sub(deal.lastBillTS));
+        } else if (deal.params.duration != 0
+            && block.timestamp > deal.params.endTime
+            && deal.params.lastBillTS < deal.params.endTime) {
+            paidAmount = CalculatePayment(deal.params.price, deal.params.endTime.sub(deal.params.lastBillTS));
         } else {
-            paidAmount = CalculatePayment(deal.price, block.timestamp.sub(deal.lastBillTS));
+            paidAmount = CalculatePayment(deal.params.price, block.timestamp.sub(deal.params.lastBillTS));
         }
 
-        if (paidAmount > deal.blockedBalance) {
-            if (token.balanceOf(deal.consumerID) >= paidAmount.sub(deal.blockedBalance)) {
-                require(token.transferFrom(deal.consumerID, this, paidAmount.sub(deal.blockedBalance)));
-                deals[dealID].blockedBalance = deals[dealID].blockedBalance.add(paidAmount.sub(deal.blockedBalance));
+        if (paidAmount > deal.params.blockedBalance) {
+            if (token.balanceOf(deal.info.consumerID) >= paidAmount.sub(deal.params.blockedBalance)) {
+                require(token.transferFrom(deal.info.consumerID, this, paidAmount.sub(deal.params.blockedBalance)));
+                dl.SetDealBlockedBalance(dealID, deal.params.blockedBalance.add(paidAmount.sub(deal.params.blockedBalance)));
             } else {
-                emit Billed(dealID, deals[dealID].blockedBalance);
+                emit Billed(dealID, deal.params.blockedBalance);
                 InternalCloseDeal(dealID);
-                require(token.transfer(deal.masterID, deal.blockedBalance));
-                deals[dealID].lastBillTS = block.timestamp;
-                deals[dealID].totalPayout = deals[dealID].totalPayout.add(deal.blockedBalance);
-                deals[dealID].blockedBalance = 0;
+                require(token.transfer(deal.info.masterID, deal.params.blockedBalance));
+                dl.SetDealBlockedBalance(dealID, 0);
+                dl.SetDealTotalPayout(dealID, deal.params.totalPayout.add(deal.params.blockedBalance));
+                dl.SetDealEndTime(dealID, block.timestamp);
                 return true;
             }
         }
-        require(token.transfer(deal.masterID, paidAmount));
-        deals[dealID].blockedBalance = deals[dealID].blockedBalance.sub(paidAmount);
-        deals[dealID].totalPayout = deals[dealID].totalPayout.add(paidAmount);
-        deals[dealID].lastBillTS = block.timestamp;
-        emit Billed(dealID, paidAmount);
+        // update deal state after all
+        (
+        duration,
+        price,
+        endTime,
+        status,
+        blockedBalance,
+        totalPayout,
+        lastBillTS) = dl.GetDealParams(dealID);
+
+        params = Deals.DealParams(duration,
+            price,
+            endTime,
+            status,
+            blockedBalance,
+            totalPayout,
+            lastBillTS);
+
+        deal = Deals.Deal(info, params);
+
+        require(token.transfer(deal.info.masterID, paidAmount));
+        dl.SetDealBlockedBalance(dealID, deal.params.blockedBalance.sub(paidAmount));
+        dl.SetDealTotalPayout(dealID, deal.params.totalPayout.add(paidAmount));
+        dl.SetDealLastBillTS(dealID, block.timestamp);
         return true;
     }
 
     function ReserveNextPeriodFunds(uint dealID) internal returns (bool) {
         uint nextPeriod;
-        Deal memory deal = deals[dealID];
+        ( , address supplierID, address consumerID , , , , ) = dl.GetDealInfo(dealID);
 
-        if (IsSpot(dealID)) {
-            if (deal.status == DealStatus.STATUS_CLOSED) {
+        (uint duration, uint price, uint endTime, Deals.DealStatus status, uint blockedBalance, , ) = dl.GetDealParams(dealID);
+
+        if (duration == 0) {
+            if (status == Deals.DealStatus.STATUS_CLOSED) {
                 return true;
             }
             nextPeriod = 1 hours;
         } else {
-            if (block.timestamp > deal.endTime) {
+            if (block.timestamp > endTime) {
                 // we don't reserve funds for next period
                 return true;
             }
-            if (deal.endTime.sub(block.timestamp) < 1 days) {
-                nextPeriod = deal.endTime.sub(block.timestamp);
+            if (endTime.sub(block.timestamp) < 1 days) {
+                nextPeriod = endTime.sub(block.timestamp);
             } else {
                 nextPeriod = 1 days;
             }
         }
 
-        if (CalculatePayment(deal.price, nextPeriod) > deals[dealID].blockedBalance) {
-            uint nextPeriodSum = CalculatePayment(deal.price, nextPeriod).sub(deals[dealID].blockedBalance);
+        if (CalculatePayment(price, nextPeriod) > blockedBalance) {
+            uint nextPeriodSum = CalculatePayment(price, nextPeriod).sub(blockedBalance);
 
-            if (token.balanceOf(deal.consumerID) >= nextPeriodSum) {
-                require(token.transferFrom(deal.consumerID, this, nextPeriodSum));
-                deals[dealID].blockedBalance = deals[dealID].blockedBalance.add(nextPeriodSum);
+            if (token.balanceOf(consumerID) >= nextPeriodSum) {
+                require(token.transferFrom(consumerID, this, nextPeriodSum));
+                dl.SetDealBlockedBalance(dealID, blockedBalance.add(nextPeriodSum));
             } else {
-                emit Billed(dealID, deals[dealID].blockedBalance);
+              // ?????
+                emit Billed(dealID, blockedBalance);
                 InternalCloseDeal(dealID);
                 RefundRemainingFunds(dealID);
                 return true;
@@ -589,17 +746,22 @@ contract Market is Ownable, Pausable {
         return true;
     }
 
-    function RefundRemainingFunds(uint dealID) internal returns (bool){
-        if (deals[dealID].blockedBalance != 0) {
-            token.transfer(deals[dealID].consumerID, deals[dealID].blockedBalance);
-            deals[dealID].blockedBalance = 0;
+    function RefundRemainingFunds(uint dealID) internal returns (bool) {
+      ( , , address consumerID , , , , ) = dl.GetDealInfo(dealID);
+
+      (, , , , uint blockedBalance, , ) = dl.GetDealParams(dealID);
+
+        if (blockedBalance != 0) {
+            token.transfer(consumerID, blockedBalance);
+            dl.SetDealBlockedBalance(dealID, 0);
         }
         return true;
     }
 
-    function IsSpot(uint dealID) internal view returns (bool){
+    //legacy
+    /* function IsSpot(uint dealID) internal view returns (bool){
         return deals[dealID].duration == 0;
-    }
+    } */
 
     function CalculatePayment(uint _price, uint _period) internal view returns (uint) {
         uint rate = oracle.getCurrentPrice();
@@ -607,23 +769,29 @@ contract Market is Ownable, Pausable {
     }
 
     function AddToBlacklist(uint dealID, BlacklistPerson role) internal {
+        (, address supplierID, address consumerID, address masterID, , , ) = dl.GetDealInfo(dealID);
+
         // only consumer can blacklist
-        require(msg.sender == deals[dealID].consumerID || role == BlacklistPerson.BLACKLIST_NOBODY);
+        require(msg.sender == consumerID || role == BlacklistPerson.BLACKLIST_NOBODY);
         if (role == BlacklistPerson.BLACKLIST_WORKER) {
-            bl.Add(deals[dealID].consumerID, deals[dealID].supplierID);
+            bl.Add(consumerID, supplierID);
         } else if (role == BlacklistPerson.BLACKLIST_MASTER) {
-            bl.Add(deals[dealID].consumerID, deals[dealID].masterID);
+            bl.Add(consumerID, masterID);
         }
     }
 
     function InternalCloseDeal(uint dealID) internal {
-        if (deals[dealID].status == DealStatus.STATUS_CLOSED) {
+        ( , address supplierID, address consumerID, address masterID, , , ) = dl.GetDealInfo(dealID);
+
+        ( , , , Deals.DealStatus status, , , ) = dl.GetDealParams(dealID);
+
+        if (status == Deals.DealStatus.STATUS_CLOSED) {
             return;
         }
-        require((deals[dealID].status == DealStatus.STATUS_ACCEPTED));
-        require(msg.sender == deals[dealID].consumerID || msg.sender == deals[dealID].supplierID || msg.sender == deals[dealID].masterID);
-        deals[dealID].status = DealStatus.STATUS_CLOSED;
-        deals[dealID].endTime = block.timestamp;
+        require((status == Deals.DealStatus.STATUS_ACCEPTED));
+        require(msg.sender == consumerID || msg.sender == supplierID || msg.sender == masterID);
+        dl.SetDealStatus(dealID, Deals.DealStatus.STATUS_CLOSED);
+        dl.SetDealEndTime(dealID, block.timestamp);
         emit DealUpdated(dealID);
     }
 
@@ -659,6 +827,16 @@ contract Market is Ownable, Pausable {
         require(OracleUSD(_newOracle).getCurrentPrice() != 0);
         oracle = OracleUSD(_newOracle);
         return true;
+    }
+
+    function SetDealsAddress(address _newDeals) public onlyOwner returns (bool) {
+        dl = Deals(_newDeals);
+        return true;
+    }
+
+    function SetOrdersAddress(address _newOrders) public onlyOwner returns (bool) {
+        ord = Orders(_newOrders);
+        return  true;
     }
 
     function SetBenchmarksQuantity(uint _newQuantity) onlyOwner public returns (bool) {

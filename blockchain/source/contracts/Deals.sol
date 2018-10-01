@@ -70,12 +70,11 @@ contract Deals is Ownable {
         dealsAmount += 1;
 
         //DealInfo memory info = DealInfo(_benchmarks, _supplierID, _consumerID, _masterID, _askID, _bidID, __bidID);
-        //StoreA(_benchmarks, _supplierID, _consumerID, _masterID, _askID, _bidID, _startTime);
         //DealParams memory params = DealParams(_duration, _price, _endTime, _status, _blockedBalance, _totalPayout, _lastBillTS);
-        //StoreB(_duration, _price, _endTime, _status, _blockedBalance, _totalPayout, _lastBillTS);
 
 
-
+        // only one way not fall into stack error
+        
         deals[dealsAmount].info.benchmarks = _benchmarks;
         deals[dealsAmount].info.supplierID = _supplierID;
         deals[dealsAmount].info.consumerID = _consumerID;
@@ -95,31 +94,7 @@ contract Deals is Ownable {
         return dealsAmount;
     }
 
-    /* function StoreA(
-        uint64[] _benchmarks,
-        address _supplierID,
-        address _consumerID,
-        address _masterID,
-        uint _askID,
-        uint _bidID,
-        uint _startTime
-      ) internal {
-          deals[dealsAmount] = Deal(DealInfo(_benchmarks, _supplierID, _consumerID, _masterID, _askID, _bidID, _startTime),)
-      }
 
-      function StoreA(
-        uint _duration,
-        uint _price,,
-        uint _endTime,
-        DealStatus _status,
-        uint _blockedBalance,
-        uint _totalPayout,
-        uint _lastBillTS
-        ) interna; {
-            deals[dealsAmount] = Deal(,DealParams(_duration, _price, _endTime, _status, _blockedBalance, _totalPayout, _lastBillTS));
-
-
-        } */
 
 
 
