@@ -1,13 +1,10 @@
 pragma solidity ^0.4.23;
 
 import "zeppelin-solidity/contracts/ownership/Ownable.sol";
+import "./ProfileRegistry.sol";
 
-
-contract Orders() is Ownable{
+contract Orders is Ownable {
     //events
-
-    event OrderPlaced(uint indexed orderID);
-    event OrderUpdated(uint indexed orderID);
 
     //enums
 
@@ -54,7 +51,7 @@ contract Orders() is Ownable{
 
     //Constructor
 
-    constructor(address _market) {
+    constructor(address _market) public {
         owner = _market;
     }
 
@@ -70,41 +67,39 @@ contract Orders() is Ownable{
         bytes32 _tag,
         uint64[] _benchmarks,
         uint _frozenSum,
-        uint _dealID) public onlyOwner {
+        uint _dealID) public onlyOwner  returns(uint) {
 
-            ordersAmount = ordersAmount.add(1);
-            uint256 orderId = ordersAmount;
+            ordersAmount += 1;
 
-            orders[orderId] = Order(_orderType,
-                _orderStatus,
-                _author,
-                _counterparty,
-                _duration,
-                _price,
-                _netflags,
-                _identityLevel,
-                _blacklist,
-                _tag,
-                _benchmarks,
-                _frozenSum,
-                _dealID);
+            orders[ordersAmount].info.orderType = _orderType;
+            orders[ordersAmount].info.author = _author;
+            orders[ordersAmount].info.counterparty = _counterparty;
+            orders[ordersAmount].info.duration = _duration;
+            orders[ordersAmount].info.price = _price;
+            orders[ordersAmount].info.netflags = _netflags;
+            orders[ordersAmount].info.identityLevel = _identityLevel;
+            orders[ordersAmount].info.blacklist = _blacklist;
+            orders[ordersAmount].info.tag = _tag;
+            orders[ordersAmount].info.benchmarks = _benchmarks;
+            orders[ordersAmount].info.frozenSum = _frozenSum;
+            orders[ordersAmount].params.orderStatus = _orderStatus;
+            orders[ordersAmount].params.dealID = _dealID;
 
-            emit OrderPlaced(orderId);
+            return ordersAmount;
         }
 
-    function Cancel(orderID) public onlyOwner {
+    function SetOrderStatus(uint orderID, OrderStatus _status) public onlyOwner {
         require(orderID >= ordersAmount);
-        orders[orderID].OrderParams.orderStatus = OrderStatus.ORDER_INACTIVE;
-        emit OrderUpdated(orderID);
+        orders[orderID].params.orderStatus = _status;
     }
 
-    function BindDeal(orderID, dealID) public onlyOwner {
+    function SetOrderDealID(uint orderID, uint _dealID) public onlyOwner {
         require(orderID >= ordersAmount);
-        orders[orderID].OrderParams.orderStatus = OrderStatus.ORDER_INACTIVE;
-        //dont think that really necessary emit event here
+        orders[orderID].params.orderStatus = OrderStatus.ORDER_INACTIVE;
+        //dont think that Is really necessary emit event here
     }
 
-    function getOrdersAmount() public view returns (uint) {
+    function GetOrdersAmount() public view returns (uint) {
         return ordersAmount;
     }
 
@@ -122,7 +117,7 @@ contract Orders() is Ownable{
         uint64[] benchmarks,
         uint frozenSum
     ){
-        Order.Info memory info = orders[orderID].OrderInfo;
+        OrderInfo memory info = orders[orderID].info;
         return (
         info.orderType,
         info.author,
@@ -143,7 +138,7 @@ contract Orders() is Ownable{
         OrderStatus orderStatus,
         uint dealID
     ){
-        Order memory params = orders[orderID].OrderParams;
+        OrderParams memory params = orders[orderID].params;
         return (
         params.orderStatus,
         params.dealID
