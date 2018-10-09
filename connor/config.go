@@ -76,8 +76,6 @@ type Config struct {
 	PriceSource   price.SourceConfig `yaml:"price_source"`
 
 	Metrics string `yaml:"metrics" default:"127.0.0.1:14005"`
-
-	backends *backends
 }
 
 func (c *Config) validate() error {
@@ -161,16 +159,12 @@ func (c *Config) getBaseBenchmarks() types.Benchmarks {
 }
 
 func (c *Config) getBackends() *backends {
-	if c.backends == nil {
-		c.backends = &backends{
-			processorFactory: antifraud.NewProcessorFactory(&c.AntiFraud),
-			corderFactory:    types.NewCorderFactory(c.Container.Tag, c.Market.benchmarkID, c.Market.Counterparty),
-			dealFactory:      types.NewDealFactory(c.Market.benchmarkID),
-			priceProvider:    c.PriceSource.Init(c.Market.PriceControl.Marginality),
-		}
+	return &backends{
+		processorFactory: antifraud.NewProcessorFactory(&c.AntiFraud),
+		corderFactory:    types.NewCorderFactory(c.Container.Tag, c.Market.benchmarkID, c.Market.Counterparty),
+		dealFactory:      types.NewDealFactory(c.Market.benchmarkID),
+		priceProvider:    c.PriceSource.Init(c.Market.PriceControl.Marginality),
 	}
-
-	return c.backends
 }
 
 func applyEnvTemplate(env map[string]string, dealID *sonm.BigInt) map[string]string {
